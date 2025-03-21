@@ -7,10 +7,12 @@
 #include "evm_fixture.hpp"
 #include <array>
 
+#include <test/utils/bytecode.hpp>
 #include <evmone/instructions_traits.hpp>
 
 using namespace evmc::literals;
 using evmone::test::evm;
+using namespace evmone::test;
 using namespace evmone;
 
 evmc_revision evm_version_to_revision[] = {

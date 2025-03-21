@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include "evmone/eof.hpp"
 #include <evmc/mocked_host.hpp>
 #include <gtest/gtest.h>
 #include <intx/intx.hpp>
@@ -117,20 +118,26 @@ protected:
             host.access_account(msg.sender);
             host.access_account(msg.recipient);
         }
+	
+	    if (rev >= EVMC_OSAKA && is_eof_container(code))
+        {
+            ASSERT_EQ(get_error_message(validate_eof(rev, ContainerKind::runtime, code)),
+                get_error_message(EOFValidationError::success));
+        }
 
         if(!is_advanced()) {
             evmone::ExecutionState state;
             state.reset(msg, rev, evmc::MockedHost::get_interface(), host.to_context(), code, gas_params, eos_evm_version);
             auto& evm_ = *static_cast<evmone::VM*>(vm.get_raw_pointer());
-            auto analysis = evmone::baseline::analyze(rev, code);
-            result = evmc::Result{evmone::baseline::execute(evm_, gas, state, analysis)};
+            auto analysis = evmone::baseline::analyze(code, rev >= instr::REV_EOF1);
+            result = evmc::Result{evmone::baseline::execute(evm_, msg, state, analysis)};
         } else {
             evmone::advanced::AdvancedExecutionState state;
             state.reset(msg, rev, evmc::MockedHost::get_interface(), host.to_context(), code, gas_params, eos_evm_version);
             evmone::advanced::AdvancedCodeAnalysis analysis;
             const bytes_view container = {code.data(), code.size()};
             if (is_eof_container(container)) {
-                if (rev >= EVMC_CANCUN) {
+                if (rev >= EVMC_OSAKA) {
                     const auto eof1_header = read_valid_eof1_header(container);
                     analysis = evmone::advanced::analyze(rev, eof1_header.get_code(container, 0));
                 } else {

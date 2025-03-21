@@ -18,7 +18,7 @@ struct BloomFilter
     uint8_t bytes[256] = {};
 
     /// Implicit operator converting to bytes_view.
-    inline constexpr operator bytes_view() const noexcept { return {bytes, sizeof(bytes)}; }
+    constexpr operator bytes_view() const noexcept { return {bytes, sizeof(bytes)}; }
 };
 
 /// Computes combined bloom fitter for set of logs.
@@ -29,5 +29,8 @@ struct BloomFilter
 /// It's used to compute bloom filter for a block.
 [[nodiscard]] BloomFilter compute_bloom_filter(
     std::span<const TransactionReceipt> receipts) noexcept;
+
+/// Loads BloomFilter from bytes_view
+BloomFilter bloom_filter_from_bytes(const bytes_view& data) noexcept;
 
 }  // namespace evmone::state
