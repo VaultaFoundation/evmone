@@ -4,9 +4,6 @@
 
 include(LibraryTools)
 
-hunter_add_package(intx)
-find_package(intx CONFIG REQUIRED)
-
 add_library(evmone
     ${include_dir}/evmone/evmone.h
     advanced_analysis.cpp
@@ -14,10 +11,12 @@ add_library(evmone
     advanced_execution.cpp
     advanced_execution.hpp
     advanced_instructions.cpp
-    baseline.cpp
     baseline.hpp
+    baseline_analysis.cpp
+    baseline_execution.cpp
     baseline_instruction_table.cpp
     baseline_instruction_table.hpp
+    constants.hpp
     eof.cpp
     eof.hpp
     instructions.hpp
@@ -26,11 +25,14 @@ add_library(evmone
     instructions_storage.cpp
     instructions_traits.hpp
     instructions_xmacro.hpp
-    opcodes_helpers.h
     tracing.cpp
     tracing.hpp
     vm.cpp
     vm.hpp
+    refund.hpp
+    refund.cpp
+    gas_prices.hpp
+    gas_prices.cpp
 )
 target_compile_features(evmone PUBLIC cxx_std_20)
 target_link_libraries(evmone PUBLIC evmc::evmc intx::intx PRIVATE ethash::keccak)
@@ -48,7 +50,7 @@ if(CABLE_COMPILER_GNULIKE)
     target_compile_options(
         evmone PRIVATE
         -fno-exceptions
-        $<$<CXX_COMPILER_ID:GNU>:-Wstack-usage=2600>
+        $<$<CXX_COMPILER_ID:GNU>:-Wstack-usage=2900>
     )
     if(NOT SANITIZE MATCHES undefined)
         # RTTI can be disabled except for UBSan which checks vptr integrity.
@@ -61,6 +63,8 @@ set_target_properties(
     VERSION ${PROJECT_VERSION}
     SOVERSION ${PROJECT_SOVERSION}
 )
+
+set_target_properties(evmone PROPERTIES CXX_VISIBILITY_PRESET default)
 
 if(NOT SANITIZE)
     # On Linux, check if all symbols in evmone are resolved during linking.

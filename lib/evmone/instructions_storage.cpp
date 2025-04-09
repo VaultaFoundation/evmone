@@ -39,8 +39,11 @@ constexpr auto storage_cost_spec = []() noexcept {
     tbl[EVMC_PARIS] = tbl[EVMC_LONDON];
     tbl[EVMC_SHANGHAI] = tbl[EVMC_LONDON];
     tbl[EVMC_CANCUN] = tbl[EVMC_LONDON];
+    tbl[EVMC_PRAGUE] = tbl[EVMC_LONDON];
+    tbl[EVMC_OSAKA] = tbl[EVMC_LONDON];
     return tbl;
 }();
+
 
 // The lookup table of SSTORE costs by the storage update status.
 constexpr auto sstore_costs = []() noexcept {
@@ -91,7 +94,9 @@ Result sload(StackTop stack, int64_t gas_left, ExecutionState& state) noexcept
     {
         // The warm storage access cost is already applied (from the cost table).
         // Here we need to apply additional cold storage access cost.
-        int64_t additional_cold_sload_cost = instr::cold_sload_cost - instr::warm_storage_read_cost;
+        constexpr auto additional_cold_sload_cost =
+            instr::cold_sload_cost - instr::warm_storage_read_cost;
+        state.last_opcode_gas_cost += additional_cold_sload_cost;
         if ((gas_left -= additional_cold_sload_cost) < 0)
             return {EVMC_OUT_OF_GAS, gas_left};
     }

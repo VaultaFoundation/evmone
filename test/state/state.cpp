@@ -3,173 +3,499 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "state.hpp"
-#include "errors.hpp"
+#include "../utils/stdx/utility.hpp"
 #include "host.hpp"
-#include "rlp.hpp"
-#include <evmone/evmone.h>
-#include <evmone/execution_state.hpp>
+#include "state_view.hpp"
+#include <evmone/constants.hpp>
+#include <evmone/eof.hpp>
+#include <evmone/refund.hpp>
+#include <evmone/execution_result.hpp>
+#include <algorithm>
 
 namespace evmone::state
 {
 namespace
 {
-inline constexpr int64_t num_words(size_t size_in_bytes) noexcept
+constexpr int64_t num_words(size_t size_in_bytes) noexcept
 {
     return static_cast<int64_t>((size_in_bytes + 31) / 32);
 }
 
-int64_t compute_tx_data_cost(evmc_revision rev, bytes_view data) noexcept
+size_t compute_tx_data_tokens(evmc_revision rev, bytes_view data) noexcept
 {
-    constexpr int64_t zero_byte_cost = 4;
-    const int64_t nonzero_byte_cost = rev >= EVMC_ISTANBUL ? 16 : 68;
-    int64_t cost = 0;
-    for (const auto b : data)
-        cost += (b == 0) ? zero_byte_cost : nonzero_byte_cost;
-    return cost;
+    const auto num_zero_bytes = static_cast<size_t>(std::ranges::count(data, 0));
+    const auto num_nonzero_bytes = data.size() - num_zero_bytes;
+
+    const size_t nonzero_byte_multiplier = rev >= EVMC_ISTANBUL ? 4 : 17;
+    return (nonzero_byte_multiplier * num_nonzero_bytes) + num_zero_bytes;
 }
 
 int64_t compute_access_list_cost(const AccessList& access_list) noexcept
 {
-    static constexpr auto storage_key_cost = 1900;
-    static constexpr auto address_cost = 2400;
+    static constexpr auto ADDRESS_COST = 2400;
+    static constexpr auto STORAGE_KEY_COST = 1900;
 
     int64_t cost = 0;
-    for (const auto& a : access_list)
-        cost += address_cost + static_cast<int64_t>(a.second.size()) * storage_key_cost;
+    for (const auto& [_, keys] : access_list)
+        cost += ADDRESS_COST + static_cast<int64_t>(keys.size()) * STORAGE_KEY_COST;
     return cost;
 }
 
-int64_t compute_tx_intrinsic_cost(evmc_revision rev, const Transaction& tx) noexcept
+struct TransactionCost
 {
-    static constexpr auto call_tx_cost = 21000;
-    static constexpr auto create_tx_cost = 53000;
-    static constexpr auto initcode_word_cost = 2;
-    const auto is_create = !tx.to.has_value();
+    int64_t intrinsic = 0;
+    int64_t min = 0;
+};
+
+/// Compute the transaction intrinsic gas 𝑔₀ (Yellow Paper, 6.2) and minimal gas (EIP-7623).
+TransactionCost compute_tx_intrinsic_cost(evmc_revision rev, const Transaction& tx) noexcept
+{
+    static constexpr auto TX_BASE_COST = 21000;
+    static constexpr auto TX_CREATE_COST = 32000;
+    static constexpr auto DATA_TOKEN_COST = 4;
+    static constexpr auto INITCODE_WORD_COST = 2;
+    static constexpr auto TOTAL_COST_FLOOR_PER_TOKEN = 10;
+
+    const auto is_create = !tx.to.has_value();  // Covers also EOF creation transactions.
+
+    const auto create_cost = (is_create && rev >= EVMC_HOMESTEAD) ? TX_CREATE_COST : 0;
+
+    const auto num_data_tokens = static_cast<int64_t>(compute_tx_data_tokens(rev, tx.data));
+    const auto data_cost = num_data_tokens * DATA_TOKEN_COST;
+
+    const auto access_list_cost = compute_access_list_cost(tx.access_list);
+
     const auto initcode_cost =
-        is_create && rev >= EVMC_SHANGHAI ? initcode_word_cost * num_words(tx.data.size()) : 0;
-    const auto tx_cost = is_create && rev >= EVMC_HOMESTEAD ? create_tx_cost : call_tx_cost;
-    return tx_cost + compute_tx_data_cost(rev, tx.data) + compute_access_list_cost(tx.access_list) +
-           initcode_cost;
+        (is_create && rev >= EVMC_SHANGHAI) ? INITCODE_WORD_COST * num_words(tx.data.size()) : 0;
+
+    const auto intrinsic_cost =
+        TX_BASE_COST + create_cost + data_cost + access_list_cost + initcode_cost;
+
+    // EIP-7623: Compute the minimum cost for the transaction by. If disabled, just use 0.
+    const auto min_cost =
+        rev >= EVMC_PRAGUE ? TX_BASE_COST + num_data_tokens * TOTAL_COST_FLOOR_PER_TOKEN : 0;
+
+    return {intrinsic_cost, min_cost};
+}
+
+evmc_message build_message(
+    const Transaction& tx, int64_t execution_gas_limit, evmc_revision rev) noexcept
+{
+    const auto recipient = tx.to.has_value() ? *tx.to : evmc::address{};
+
+    const auto is_legacy_eof_create =
+        rev >= EVMC_OSAKA && !tx.to.has_value() && is_eof_container(tx.data);
+
+    return {.kind = is_legacy_eof_create ? EVMC_EOFCREATE :
+                    tx.to.has_value()    ? EVMC_CALL :
+                                           EVMC_CREATE,
+        .flags = 0,
+        .depth = 0,
+        .gas = execution_gas_limit,
+        .recipient = recipient,
+        .sender = tx.sender,
+        .input_data = tx.data.data(),
+        .input_size = tx.data.size(),
+        .value = intx::be::store<evmc::uint256be>(tx.value),
+        .create2_salt = {},
+        .code_address = recipient,
+        .code = nullptr,
+        .code_size = 0};
+}
+}  // namespace
+
+StateDiff State::build_diff(evmc_revision rev) const
+{
+    StateDiff diff;
+    for (const auto& [addr, m] : m_modified)
+    {
+        if (m.destructed)
+        {
+            // TODO: This must be done even for just_created
+            //   because destructed may pre-date just_created. Add test to evmone (EEST has it).
+            diff.deleted_accounts.emplace_back(addr);
+            continue;
+        }
+        if (m.erase_if_empty && rev >= EVMC_SPURIOUS_DRAGON && m.is_empty())
+        {
+            if (!m.just_created)  // Don't report just created accounts
+                diff.deleted_accounts.emplace_back(addr);
+            continue;
+        }
+
+        // Unconditionally report nonce and balance as modified.
+        // TODO: We don't have information if the balance/nonce has actually changed.
+        //   One option is to just keep the original values. This may be handy for RPC.
+        // TODO(clang): In old Clang emplace_back without Account doesn't compile.
+        //   NOLINTNEXTLINE(modernize-use-emplace)
+        auto& a = diff.modified_accounts.emplace_back(StateDiff::Entry{addr, m.nonce, m.balance});
+
+        // Output only the new code.
+        // TODO: Output also the code hash. It will be needed for DB update and MPT hash.
+        if (m.just_created && !m.code.empty())
+            a.code = m.code;
+
+        for (const auto& [k, v] : m.storage)
+        {
+            if (v.current != v.original)
+                a.modified_storage.emplace_back(k, v.current);
+        }
+    }
+    return diff;
+}
+
+Account& State::insert(const address& addr, Account account)
+{
+    const auto r = m_modified.insert({addr, std::move(account)});
+    assert(r.second);
+    return r.first->second;
+}
+
+Account* State::find(const address& addr) noexcept
+{
+    // TODO: Avoid double lookup (find+insert) and not cached initial state lookup for non-existent
+    //   accounts. If we want to cache non-existent account we need a proper flag for it.
+    if (const auto it = m_modified.find(addr); it != m_modified.end())
+        return &it->second;
+    if (const auto cacc = m_initial.get_account(addr); cacc)
+        return &insert(addr, {.nonce = cacc->nonce,
+                                 .balance = cacc->balance,
+                                 .code_hash = cacc->code_hash,
+                                 .has_initial_storage = cacc->has_storage});
+    return nullptr;
+}
+
+Account& State::get(const address& addr) noexcept
+{
+    auto acc = find(addr);
+    assert(acc != nullptr);
+    return *acc;
+}
+
+Account& State::get_or_insert(const address& addr, Account account)
+{
+    if (const auto acc = find(addr); acc != nullptr)
+        return *acc;
+    return insert(addr, std::move(account));
+}
+
+bytes_view State::get_code(const address& addr)
+{
+    auto* a = find(addr);
+    if (a == nullptr)
+        return {};
+    if (a->code_hash == Account::EMPTY_CODE_HASH)
+        return {};
+    if (a->code.empty())
+        a->code = m_initial.get_account_code(addr);
+    return a->code;
+}
+
+Account& State::touch(const address& addr)
+{
+    auto& acc = get_or_insert(addr, {.erase_if_empty = true});
+    if (!acc.erase_if_empty && acc.is_empty())
+    {
+        acc.erase_if_empty = true;
+        m_journal.emplace_back(JournalTouched{addr});
+    }
+    return acc;
+}
+
+StorageValue& State::get_storage(const address& addr, const bytes32& key)
+{
+    // TODO: Avoid account lookup by giving the reference to the account's storage to Host.
+    auto& acc = get(addr);
+    const auto [it, missing] = acc.storage.try_emplace(key);
+    if (missing)
+    {
+        const auto initial_value = m_initial.get_storage(addr, key);
+        it->second = {initial_value, initial_value};
+    }
+    return it->second;
+}
+
+void State::journal_balance_change(const address& addr, const intx::uint256& prev_balance)
+{
+    m_journal.emplace_back(JournalBalanceChange{{addr}, prev_balance});
+}
+
+void State::journal_storage_change(
+    const address& addr, const bytes32& key, const StorageValue& value)
+{
+    m_journal.emplace_back(JournalStorageChange{{addr}, key, value.current, value.access_status});
+}
+
+void State::journal_transient_storage_change(
+    const address& addr, const bytes32& key, const bytes32& value)
+{
+    m_journal.emplace_back(JournalTransientStorageChange{{addr}, key, value});
+}
+
+void State::journal_bump_nonce(const address& addr)
+{
+    m_journal.emplace_back(JournalNonceBump{addr});
+}
+
+void State::journal_create(const address& addr, bool existed)
+{
+    m_journal.emplace_back(JournalCreate{{addr}, existed});
+}
+
+void State::journal_destruct(const address& addr)
+{
+    m_journal.emplace_back(JournalDestruct{addr});
+}
+
+void State::journal_access_account(const address& addr)
+{
+    m_journal.emplace_back(JournalAccessAccount{addr});
+}
+
+void State::rollback(size_t checkpoint)
+{
+    while (m_journal.size() != checkpoint)
+    {
+        std::visit(
+            [this](const auto& e) {
+                using T = std::decay_t<decltype(e)>;
+                if constexpr (std::is_same_v<T, JournalNonceBump>)
+                {
+                    get(e.addr).nonce -= 1;
+                }
+                else if constexpr (std::is_same_v<T, JournalTouched>)
+                {
+                    get(e.addr).erase_if_empty = false;
+                }
+                else if constexpr (std::is_same_v<T, JournalDestruct>)
+                {
+                    get(e.addr).destructed = false;
+                }
+                else if constexpr (std::is_same_v<T, JournalAccessAccount>)
+                {
+                    get(e.addr).access_status = EVMC_ACCESS_COLD;
+                }
+                else if constexpr (std::is_same_v<T, JournalCreate>)
+                {
+                    if (e.existed)
+                    {
+                        // This account is not always "touched". TODO: Why?
+                        auto& a = get(e.addr);
+                        a.nonce = 0;
+                        a.code_hash = Account::EMPTY_CODE_HASH;
+                        a.code.clear();
+                    }
+                    else
+                    {
+                        // TODO: Before Spurious Dragon we don't clear empty accounts ("erasable")
+                        //       so we need to delete them here explicitly.
+                        //       This should be changed by tuning "erasable" flag
+                        //       and clear in all revisions.
+                        m_modified.erase(e.addr);
+                    }
+                }
+                else if constexpr (std::is_same_v<T, JournalStorageChange>)
+                {
+                    auto& s = get(e.addr).storage.find(e.key)->second;
+                    s.current = e.prev_value;
+                    s.access_status = e.prev_access_status;
+                }
+                else if constexpr (std::is_same_v<T, JournalTransientStorageChange>)
+                {
+                    auto& s = get(e.addr).transient_storage.find(e.key)->second;
+                    s = e.prev_value;
+                }
+                else if constexpr (std::is_same_v<T, JournalBalanceChange>)
+                {
+                    get(e.addr).balance = e.prev_balance;
+                }
+                else
+                {
+                    // TODO(C++23): Change condition to `false` once CWG2518 is in.
+                    static_assert(std::is_void_v<T>, "unhandled journal entry type");
+                }
+            },
+            m_journal.back());
+        m_journal.pop_back();
+    }
 }
 
 /// Validates transaction and computes its execution gas limit (the amount of gas provided to EVM).
-/// @return  Non-negative execution gas limit for valid transaction
-///          or negative value for invalid transaction.
-std::variant<int64_t, std::error_code> validate_transaction(const Account& sender_acc,
-    const BlockInfo& block, const Transaction& tx, evmc_revision rev) noexcept
+/// @return  Execution gas limit or transaction validation error.
+std::variant<TransactionProperties, std::error_code> validate_transaction(
+    const StateView& state_view, const BlockInfo& block, const Transaction& tx, evmc_revision rev,
+    int64_t block_gas_left, int64_t blob_gas_left) noexcept
 {
-    if (rev < EVMC_LONDON && tx.kind == Transaction::Kind::eip1559)
-        return make_error_code(TX_TYPE_NOT_SUPPORTED);
+    switch (tx.type)
+    {
+    case Transaction::Type::blob:
+        if (rev < EVMC_CANCUN)
+            return make_error_code(TX_TYPE_NOT_SUPPORTED);
+        if (!tx.to.has_value())
+            return make_error_code(CREATE_BLOB_TX);
+        if (tx.blob_hashes.empty())
+            return make_error_code(EMPTY_BLOB_HASHES_LIST);
 
-    if (rev < EVMC_BERLIN && !tx.access_list.empty())
-        return make_error_code(TX_TYPE_NOT_SUPPORTED);
+        assert(block.blob_base_fee.has_value());
+        if (tx.max_blob_gas_price < *block.blob_base_fee)
+            return make_error_code(FEE_CAP_LESS_THEN_BLOCKS);
 
-    if (tx.max_priority_gas_price > tx.max_gas_price)
-        return make_error_code(TIP_GT_FEE_CAP);  // Priority gas price is too high.
+        if (std::ranges::any_of(tx.blob_hashes, [](const auto& h) { return h.bytes[0] != 0x01; }))
+            return make_error_code(INVALID_BLOB_HASH_VERSION);
+        if (std::cmp_greater(tx.blob_gas_used(), blob_gas_left))
+            return make_error_code(BLOB_GAS_LIMIT_EXCEEDED);
+        break;
 
-    if (tx.gas_limit > block.gas_limit)
+    default:;
+    }
+
+    switch (tx.type)
+    {
+    case Transaction::Type::set_code:
+        if (rev < EVMC_PRAGUE)
+            return make_error_code(TX_TYPE_NOT_SUPPORTED);
+        [[fallthrough]];
+
+    case Transaction::Type::blob:
+    case Transaction::Type::eip1559:
+        if (rev < EVMC_LONDON)
+            return make_error_code(TX_TYPE_NOT_SUPPORTED);
+
+        if (tx.max_priority_gas_price > tx.max_gas_price)
+            return make_error_code(TIP_GT_FEE_CAP);  // Priority gas price is too high.
+        [[fallthrough]];
+
+    case Transaction::Type::access_list:
+        if (rev < EVMC_BERLIN)
+            return make_error_code(TX_TYPE_NOT_SUPPORTED);
+        [[fallthrough]];
+
+    case Transaction::Type::legacy:;
+    }
+
+    assert(tx.max_priority_gas_price <= tx.max_gas_price);
+
+    if (tx.gas_limit > block_gas_left)
         return make_error_code(GAS_LIMIT_REACHED);
 
-    if (rev >= EVMC_LONDON && tx.max_gas_price < block.base_fee)
+    if (tx.max_gas_price < block.base_fee)
         return make_error_code(FEE_CAP_LESS_THEN_BLOCKS);
 
-    if (!sender_acc.code.empty())
+    // We need some information about the sender so lookup the account in the state.
+    // TODO: During transaction execution this account will be also needed, so we may pass it along.
+    const auto sender_acc = state_view.get_account(tx.sender).value_or(
+        StateView::Account{.code_hash = Account::EMPTY_CODE_HASH});
+
+    if (sender_acc.code_hash != Account::EMPTY_CODE_HASH)
         return make_error_code(SENDER_NOT_EOA);  // Origin must not be a contract (EIP-3607).
 
-    if (sender_acc.nonce == Account::NonceMax)
+    if (sender_acc.nonce == Account::NonceMax)  // Nonce value limit (EIP-2681).
         return make_error_code(NONCE_HAS_MAX_VALUE);
 
+    if (sender_acc.nonce < tx.nonce)
+        return make_error_code(NONCE_TOO_HIGH);
+
+    if (sender_acc.nonce > tx.nonce)
+        return make_error_code(NONCE_TOO_LOW);
+
     // initcode size is limited by EIP-3860.
-    if (rev >= EVMC_SHANGHAI && !tx.to.has_value() && tx.data.size() > max_initcode_size)
+    if (rev >= EVMC_SHANGHAI && !tx.to.has_value() && tx.data.size() > MAX_INITCODE_SIZE)
         return make_error_code(INIT_CODE_SIZE_LIMIT_EXCEEDED);
 
     // Compute and check if sender has enough balance for the theoretical maximum transaction cost.
     // Note this is different from tx_max_cost computed with effective gas price later.
     // The computation cannot overflow if done with 512-bit precision.
-    if (const auto tx_cost_limit_512 =
-            umul(intx::uint256{tx.gas_limit}, tx.max_gas_price) + tx.value;
-        sender_acc.balance < tx_cost_limit_512)
+    auto max_total_fee = umul(uint256{tx.gas_limit}, tx.max_gas_price);
+    max_total_fee += tx.value;
+
+    if (tx.type == Transaction::Type::blob)
+    {
+        const auto total_blob_gas = tx.blob_gas_used();
+        // FIXME: Can overflow uint256.
+        max_total_fee += total_blob_gas * tx.max_blob_gas_price;
+    }
+    if (sender_acc.balance < max_total_fee)
         return make_error_code(INSUFFICIENT_FUNDS);
 
-    const auto intrinsic_cost = compute_tx_intrinsic_cost(rev, tx);
-    if (intrinsic_cost > tx.gas_limit)
+    const auto [intrinsic_cost, min_cost] = compute_tx_intrinsic_cost(rev, tx);
+    if (tx.gas_limit < std::max(intrinsic_cost, min_cost))
         return make_error_code(INTRINSIC_GAS_TOO_LOW);
 
-    return tx.gas_limit - intrinsic_cost;
+    const auto execution_gas_limit = tx.gas_limit - intrinsic_cost;
+    return TransactionProperties{execution_gas_limit, min_cost};
 }
 
-evmc_message build_message(const Transaction& tx, int64_t execution_gas_limit) noexcept
+StateDiff finalize(const StateView& state_view, evmc_revision rev, const address& coinbase,
+    std::optional<uint64_t> block_reward, std::span<const Ommer> ommers,
+    std::span<const Withdrawal> withdrawals)
 {
-    const auto recipient = tx.to.has_value() ? *tx.to : evmc::address{};
-    return {
-        tx.to.has_value() ? EVMC_CALL : EVMC_CREATE,
-        0,
-        0,
-        execution_gas_limit,
-        recipient,
-        tx.sender,
-        tx.data.data(),
-        tx.data.size(),
-        intx::be::store<evmc::uint256be>(tx.value),
-        {},
-        recipient,
-    };
-}
-}  // namespace
-
-void finalize(State& state, evmc_revision rev, const address& coinbase,
-    std::optional<uint64_t> block_reward, std::span<Withdrawal> withdrawals)
-{
+    State state{state_view};
+    // TODO: The block reward can be represented as a withdrawal.
     if (block_reward.has_value())
-        state.touch(coinbase).balance += *block_reward;
-
-    if (rev >= EVMC_SPURIOUS_DRAGON)
     {
-        std::erase_if(
-            state.get_accounts(), [](const std::pair<const address, Account>& p) noexcept {
-                const auto& acc = p.second;
-                return acc.erasable && acc.is_empty();
-            });
+        const auto reward = *block_reward;
+        assert(reward % 32 == 0);  // Assume block reward is divisible by 32.
+        const auto reward_by_32 = reward / 32;
+        const auto reward_by_8 = reward / 8;
+
+        state.touch(coinbase).balance += reward + reward_by_32 * ommers.size();
+        for (const auto& ommer : ommers)
+        {
+            assert(ommer.delta > 0 && ommer.delta < 8);
+            state.touch(ommer.beneficiary).balance += reward_by_8 * (8 - ommer.delta);
+        }
     }
 
     for (const auto& withdrawal : withdrawals)
         state.touch(withdrawal.recipient).balance += withdrawal.get_amount();
+
+    return state.build_diff(rev);
 }
 
-std::variant<TransactionReceipt, std::error_code> transition(
-    State& state, const BlockInfo& block, const Transaction& tx, evmc_revision rev, evmc::VM& vm)
+TransactionReceipt transition(const StateView& state_view, const BlockInfo& block,
+    const BlockHashes& block_hashes, const Transaction& tx, evmc_revision rev, evmc::VM& vm,
+    const TransactionProperties& tx_props, uint64_t eos_evm_version,
+    const evmone::gas_parameters& scaled_gas_params, const evmone::eosevm::gas_prices& gas_prices, const bool is_trust)
 {
-    auto& sender_acc = state.get(tx.sender);
-    const auto validation_result = validate_transaction(sender_acc, block, tx, rev);
+    State state{state_view};
 
-    if (holds_alternative<std::error_code>(validation_result))
-        return get<std::error_code>(validation_result);
-
-    const auto execution_gas_limit = get<int64_t>(validation_result);
+    auto& sender_acc = state.get_or_insert(tx.sender);
+    assert(sender_acc.nonce < Account::NonceMax);  // Required for valid tx.
+    ++sender_acc.nonce;                            // Bump sender nonce.
 
     const auto base_fee = (rev >= EVMC_LONDON) ? block.base_fee : 0;
-    assert(tx.max_gas_price >= base_fee);                   // Checked at the front.
-    assert(tx.max_gas_price >= tx.max_priority_gas_price);  // Checked at the front.
+    assert(tx.max_gas_price >= base_fee);                   // Required for valid tx.
+    assert(tx.max_gas_price >= tx.max_priority_gas_price);  // Required for valid tx.
     const auto priority_gas_price =
         std::min(tx.max_priority_gas_price, tx.max_gas_price - base_fee);
     const auto effective_gas_price = base_fee + priority_gas_price;
 
-    assert(effective_gas_price <= tx.max_gas_price);
+    assert(effective_gas_price <= tx.max_gas_price);  // Required for valid tx.
     const auto tx_max_cost = tx.gas_limit * effective_gas_price;
 
     sender_acc.balance -= tx_max_cost;  // Modify sender balance after all checks.
 
-    Host host{rev, vm, state, block, tx};
+    if (tx.type == Transaction::Type::blob)
+    {
+        // This uint64 * uint256 cannot overflow, because tx.blob_gas_used has limits enforced
+        // before this stage.
+        assert(block.blob_base_fee.has_value());
+        const auto blob_fee = intx::umul(intx::uint256(tx.blob_gas_used()), *block.blob_base_fee);
+        assert(blob_fee <= std::numeric_limits<intx::uint256>::max());
+        assert(sender_acc.balance >= blob_fee);  // Required for valid tx.
+        sender_acc.balance -= intx::uint256(blob_fee);
+    }
+
+    Host host{rev, vm, state, block, block_hashes, tx};
 
     sender_acc.access_status = EVMC_ACCESS_WARM;  // Tx sender is always warm.
     if (tx.to.has_value())
         host.access_account(*tx.to);
     for (const auto& [a, storage_keys] : tx.access_list)
     {
-        host.access_account(a);  // TODO: Return account ref.
-        auto& storage = state.get(a).storage;
+        host.access_account(a);
         for (const auto& key : storage_keys)
-            storage[key].access_status = EVMC_ACCESS_WARM;
+            state.get_storage(a, key).access_status = EVMC_ACCESS_WARM;
     }
     // EIP-3651: Warm COINBASE.
     // This may create an empty coinbase account. The account cannot be created unconditionally
@@ -177,77 +503,36 @@ std::variant<TransactionReceipt, std::error_code> transition(
     if (rev >= EVMC_SHANGHAI)
         host.access_account(block.coinbase);
 
-    const auto result = host.call(build_message(tx, execution_gas_limit));
+    const auto result = host.call(build_message(tx, tx_props.execution_gas_limit, rev));
 
-    auto gas_used = tx.gas_limit - result.gas_left;
+    auto res = evmone::eosevm::refund(rev, eos_evm_version, result, tx.to.has_value(),
+        tx.gas_limit, scaled_gas_params, effective_gas_price, gas_prices, priority_gas_price);
 
-    const auto max_refund_quotient = rev >= EVMC_LONDON ? 5 : 2;
-    const auto refund_limit = gas_used / max_refund_quotient;
-    const auto refund = std::min(result.gas_refund, refund_limit);
-    gas_used -= refund;
+    auto gas_used = std::visit([](const auto& v) { return static_cast<int64_t>(v.gas_used); }, res);
     assert(gas_used > 0);
 
-    state.get(tx.sender).balance += tx_max_cost - gas_used * effective_gas_price;
-    state.touch(block.coinbase).balance += gas_used * priority_gas_price;
+    // EIP-7623: The gas used by the transaction must be at least the min_gas_cost.
+    gas_used = std::max(gas_used, tx_props.min_gas_cost);
 
-    // Apply destructs.
-    std::erase_if(state.get_accounts(),
-        [](const std::pair<const address, Account>& p) noexcept { return p.second.destructed; });
+    sender_acc.balance += tx_max_cost - gas_used * effective_gas_price;
 
-    auto receipt = TransactionReceipt{tx.kind, result.status_code, gas_used, host.take_logs(), {}};
+    evmone::eosevm::execution_result exec_res;
+    if( eos_evm_version >= 3 ) {
+        const auto& resv3 = std::get<evmone::eosevm::refund_result_v3>(res);
+        exec_res.discounted_storage_gas_consumed = resv3.discounted_storage_gas_consumed;
+        exec_res.cpu_gas_consumed = resv3.cpu_gas_consumed;
+        exec_res.overhead_fee = resv3.overhead_fee;
+        exec_res.inclusion_fee = resv3.inclusion_fee;
+        exec_res.storage_fee = resv3.storage_fee;
 
-    // Cannot put it into constructor call because logs are std::moved from host instance.
-    receipt.logs_bloom_filter = compute_bloom_filter(receipt.logs);
-
-    return receipt;
-}
-
-[[nodiscard]] bytes rlp_encode(const Log& log)
-{
-    return rlp::encode_tuple(log.addr, log.topics, log.data);
-}
-
-[[nodiscard]] bytes rlp_encode(const Transaction& tx)
-{
-    if (tx.kind == Transaction::Kind::legacy)
-    {
-        // rlp [nonce, gas_price, gas_limit, to, value, data, v, r, s];
-        return rlp::encode_tuple(tx.nonce, tx.max_gas_price, static_cast<uint64_t>(tx.gas_limit),
-            tx.to.has_value() ? tx.to.value() : bytes_view(), tx.value, tx.data, tx.v, tx.r, tx.s);
+        state.touch(block.coinbase).balance += resv3.final_fee;
+    } else {
+        state.touch(block.coinbase).balance += gas_used * (is_trust ? effective_gas_price : priority_gas_price);
     }
-    else if (tx.kind == Transaction::Kind::eip2930)
-    {
-        if (tx.v > 1)
-            throw std::invalid_argument("`v` value for eip2930 transaction must be 0 or 1");
-        // tx_type +
-        // rlp [nonce, gas_price, gas_limit, to, value, data, access_list, v, r, s];
-        return bytes{0x01} +  // Transaction type (eip2930 type == 1)
-               rlp::encode_tuple(tx.chain_id, tx.nonce, tx.max_gas_price,
-                   static_cast<uint64_t>(tx.gas_limit),
-                   tx.to.has_value() ? tx.to.value() : bytes_view(), tx.value, tx.data,
-                   tx.access_list, static_cast<bool>(tx.v), tx.r, tx.s);
-    }
-    else
-    {
-        if (tx.v > 1)
-            throw std::invalid_argument("`v` value for eip1559 transaction must be 0 or 1");
-        // tx_type +
-        // rlp [chain_id, nonce, max_priority_fee_per_gas, max_fee_per_gas, gas_limit, to, value,
-        // data, access_list, sig_parity, r, s];
-        return bytes{0x02} +  // Transaction type (eip1559 type == 2)
-               rlp::encode_tuple(tx.chain_id, tx.nonce, tx.max_priority_gas_price, tx.max_gas_price,
-                   static_cast<uint64_t>(tx.gas_limit),
-                   tx.to.has_value() ? tx.to.value() : bytes_view(), tx.value, tx.data,
-                   tx.access_list, static_cast<bool>(tx.v), tx.r, tx.s);
-    }
-}
 
-[[nodiscard]] bytes rlp_encode(const TransactionReceipt& receipt)
-{
-    const auto prefix = receipt.kind == Transaction::Kind::eip1559 ? bytes{0x02} : bytes{};
-    return prefix + rlp::encode_tuple(receipt.status == EVMC_SUCCESS,
-                        static_cast<uint64_t>(receipt.gas_used),
-                        bytes_view(receipt.logs_bloom_filter), receipt.logs);
+    // Cumulative gas used is unknown in this scope.
+    return TransactionReceipt{
+        tx.type, result.status_code, gas_used, {}, host.take_logs(), {}, state.build_diff(rev), {}, exec_res
+    };
 }
-
 }  // namespace evmone::state
