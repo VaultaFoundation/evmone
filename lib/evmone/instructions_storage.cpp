@@ -138,6 +138,8 @@ Result sstore(StackTop stack, int64_t gas_left, ExecutionState& state) noexcept
     } else {
         auto [gas_cost_warm, gas_refund] = storage_cost[status];
         const auto gas_cost = gas_cost_warm + gas_cost_cold;
+        state.last_opcode_gas_cost += gas_cost;
+
         if ((gas_left -= gas_cost) < 0)
             return {EVMC_OUT_OF_GAS, gas_left};
         state.gas_state.add_cpu_gas_refund(gas_refund);

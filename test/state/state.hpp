@@ -129,6 +129,10 @@ public:
     void journal_access_account(const address& addr);
 
     /// @}
+
+    void add_filtered_message(const evmone::eosevm::filtered_message& msg) noexcept;
+    std::vector<evmone::eosevm::filtered_message> filtered_messages() const noexcept { return filtered_messages_; }
+    std::vector<evmone::eosevm::filtered_message> filtered_messages_;
 };
 
 /// Finalize state after applying a "block" of transactions.
@@ -145,7 +149,7 @@ public:
 TransactionReceipt transition(const StateView& state, const BlockInfo& block,
     const BlockHashes& block_hashes, const Transaction& tx, evmc_revision rev, evmc::VM& vm,
     const TransactionProperties& tx_props, uint64_t eos_evm_version, const evmone::gas_parameters& scaled_gas_params,
-    const evmone::eosevm::gas_prices& gas_prices, const bool is_trust);
+    const evmone::eosevm::gas_prices& gas_prices, const bool is_trust, std::optional<evmone::eosevm::filter_function> message_filter);
 
 /// Validate a transaction.
 ///

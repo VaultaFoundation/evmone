@@ -74,9 +74,9 @@ struct AdvancedExecutionState : ExecutionState
     /// Resets the contents of the execution_state so that it could be reused.
     void reset(const evmc_message& message, evmc_revision revision,
         const evmc_host_interface& host_interface, evmc_host_context* host_ctx,
-        bytes_view _code, evmone::gas_parameters gasparams, uint64_t _eos_evm_version) noexcept
+        bytes_view _code, const evmone::gas_parameters& gas_params, uint64_t evm_version) noexcept
     {
-        ExecutionState::reset(message, revision, host_interface, host_ctx, _code, gasparams, _eos_evm_version);
+        ExecutionState::reset(message, revision, host_interface, host_ctx, _code, gas_params, evm_version);
         gas_left = message.gas;
         stack = stack_space.bottom();
         analysis.advanced = nullptr;  // For consistency with previous behavior.

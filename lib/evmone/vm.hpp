@@ -55,7 +55,8 @@ public:
 
     [[nodiscard]] std::optional<evmc::Result> execute_cached_code(evmc::Host& host, evmc_revision rev,
         const evmc_message& msg, const evmc::bytes32& code_hash,
-        const std::function<evmc::bytes_view(evmc::address)>& get_code) noexcept;
+        const std::function<evmc::bytes_view(evmc::address)>& get_code,
+        uint64_t evm_version, const evmone::gas_parameters& gas_params) noexcept;
 
     [[nodiscard]] ExecutionState& get_execution_state(size_t depth) noexcept;
 

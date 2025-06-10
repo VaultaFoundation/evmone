@@ -33,6 +33,10 @@ add_library(evmone
     refund.cpp
     gas_prices.hpp
     gas_prices.cpp
+    filtered_message.hpp
+    gas_parameters.hpp
+    gas_parameters.cpp
+    gas_state.hpp
 )
 target_compile_features(evmone PUBLIC cxx_std_20)
 target_link_libraries(evmone PUBLIC evmc::evmc intx::intx PRIVATE ethash::keccak)

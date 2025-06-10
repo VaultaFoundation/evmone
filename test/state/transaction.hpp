@@ -10,6 +10,7 @@
 #include <optional>
 #include <vector>
 #include <evmone/execution_result.hpp>
+#include <evmone/filtered_message.hpp>
 
 namespace evmone::state
 {
@@ -111,6 +112,7 @@ struct TransactionReceipt
     /// Root hash of the state after this transaction. Used only in old pre-Byzantium transactions.
     std::optional<bytes32> post_state;
     evmone::eosevm::execution_result exec_res;
+    std::vector<evmone::eosevm::filtered_message> filtered_messages;
 };
 
 /// Defines how to RLP-encode a Transaction.

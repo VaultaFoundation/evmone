@@ -349,33 +349,61 @@ evmc::Result Host::create(const evmc_message& msg) noexcept
         create_msg.input_size = 0;
     }
 
-    auto result = m_vm.execute(*this, m_rev, create_msg, initcode.data(), initcode.size());
+    auto maybe_revert_gas = [&](evmc::Result& r) -> evmc::Result {
+        evmc::Result res{r.release_raw()};
+        if(evm_version_ >= 3) {
+            evmone::revert_speculative_gas(res);
+        } else {
+            res.gas_refund = 0;
+            if (res.status_code != EVMC_REVERT) {
+                res.gas_left = 0;
+            }
+        }
+        return res;
+    };
+
+    auto result = m_vm.execute(*this, m_rev, create_msg, initcode.data(), initcode.size(), evm_version_, gas_params_);
     if (result.status_code != EVMC_SUCCESS)
     {
         result.create_address = msg.recipient;
-        return result;
+        return maybe_revert_gas(result);
     }
 
-    auto gas_left = result.gas_left;
-    assert(gas_left >= 0);
-
+    assert(result.gas_left >= 0);
     const bytes_view code{result.output_data, result.output_size};
 
     // for EOFCREATE successful result is guaranteed to be non-empty
     // because container section is not allowed to be empty
     assert(msg.kind != EVMC_EOFCREATE || result.status_code != EVMC_SUCCESS || !code.empty());
 
-    if (m_rev >= EVMC_SPURIOUS_DRAGON && code.size() > MAX_CODE_SIZE)
-        return evmc::Result{EVMC_FAILURE};
-
     // Code deployment cost.
-    const auto cost = std::ssize(code) * 200;
-    gas_left -= cost;
-    if (gas_left < 0)
-    {
-        return (m_rev == EVMC_FRONTIER) ?
-                   evmc::Result{EVMC_SUCCESS, result.gas_left, result.gas_refund, 0, msg.recipient} :
-                   evmc::Result{EVMC_FAILURE};
+    auto code_deploy_gas = code.size() * (evm_version_ > 0 ? gas_params_.G_codedeposit : 200);
+    if (m_rev >= EVMC_SPURIOUS_DRAGON && code.size() > MAX_CODE_SIZE) {
+        result.status_code = EVMC_FAILURE;
+    } else if (evm_version_ >= 3) {
+        evmone::gas_state_t tmp_gas_state(evm_version_, result.gas_refund, result.storage_gas_consumed, result.storage_gas_refund, result.speculative_cpu_gas_consumed);
+        code_deploy_gas = static_cast<uint64_t>(tmp_gas_state.apply_storage_gas_delta(static_cast<int64_t>(code_deploy_gas)));
+        if((result.gas_left -= static_cast<int64_t>(code_deploy_gas)) < 0) {
+            result.status_code = EVMC_OUT_OF_GAS;
+        }
+        assert(tmp_gas_state.cpu_gas_refund() == result.gas_refund);
+        assert(tmp_gas_state.speculative_cpu_gas_consumed() == result.speculative_cpu_gas_consumed);
+        result.storage_gas_consumed = tmp_gas_state.storage_gas_consumed();
+        result.storage_gas_refund = tmp_gas_state.storage_gas_refund();
+    } else if (result.gas_left >= 0 && static_cast<uint64_t>(result.gas_left) >= code_deploy_gas) {
+        result.gas_left -= static_cast<int64_t>(code_deploy_gas);
+    } else if (m_rev >= EVMC_HOMESTEAD) {
+        result.status_code = EVMC_OUT_OF_GAS;
+    }
+
+    if(result.status_code != EVMC_SUCCESS) {
+        if(m_rev == EVMC_FRONTIER) {
+            result.status_code = EVMC_SUCCESS;
+            result.create_address = msg.recipient;
+        } else {
+            result.status_code = EVMC_FAILURE;
+        }
+        return maybe_revert_gas(result);
     }
 
     if (!code.empty() && code[0] == 0xEF)
@@ -384,39 +412,45 @@ evmc::Result Host::create(const evmc_message& msg) noexcept
         {
             // Only EOFCREATE/EOF-creation-tx is allowed to deploy code starting with EF.
             // It must be valid EOF, which was validated before execution.
-            if (msg.kind != EVMC_EOFCREATE)
-                return evmc::Result{EVMC_CONTRACT_VALIDATION_FAILURE};
-            assert(
-                validate_eof(m_rev, ContainerKind::runtime, code) == EOFValidationError::success);
+            if (msg.kind != EVMC_EOFCREATE) {
+                result.status_code = EVMC_CONTRACT_VALIDATION_FAILURE;
+                return maybe_revert_gas(result);
+            }
+            assert(validate_eof(m_rev, ContainerKind::runtime, code) == EOFValidationError::success);
         }
         else if (m_rev >= EVMC_LONDON)
         {
             // EIP-3541: Reject EF code.
-            return evmc::Result{EVMC_CONTRACT_VALIDATION_FAILURE};
+            result.status_code = EVMC_CONTRACT_VALIDATION_FAILURE;
+            return maybe_revert_gas(result);
         }
     }
 
     new_acc->code_hash = keccak256(code);
     new_acc->code = code;
 
-    return evmc::Result{result.status_code, gas_left, result.gas_refund, 0, msg.recipient};
+    result.create_address = msg.recipient;
+    return result;
 }
 
-evmc::Result Host::execute_message(const evmc_message& msg) noexcept
+evmc::Result Host::execute_message(const evmc_message& message) noexcept
 {
+    evmc_message msg{message};
     if (msg.kind == EVMC_CREATE || msg.kind == EVMC_CREATE2 || msg.kind == EVMC_EOFCREATE)
         return create(msg);
 
+    bool recipient_exists{false};
     if (msg.kind == EVMC_CALL)
     {
-        const auto exists = m_state.find(msg.recipient) != nullptr;
-        if (!exists)
-            m_state.journal_create(msg.recipient, exists);
+        recipient_exists = m_state.find(msg.recipient) != nullptr;
+        if (!recipient_exists)
+            m_state.journal_create(msg.recipient, recipient_exists);
     }
 
+    const bool value_is_zero = evmc::is_zero(msg.value);
     if (msg.kind == EVMC_CALL)
     {
-        if (evmc::is_zero(msg.value))
+        if (value_is_zero)
             m_state.touch(msg.recipient);
         else
         {
@@ -441,6 +475,34 @@ evmc::Result Host::execute_message(const evmc_message& msg) noexcept
 
     auto* my_vm = static_cast<VM*>(m_vm.get_raw_pointer());
 
+    evmc::Result res(EVMC_SUCCESS, msg.gas, 0, 0);
+    if(evm_version_ > 0 && msg.depth == 0 &&  !value_is_zero && !recipient_exists) {
+        int64_t cost = static_cast<int64_t>(gas_params_.G_txnewaccount);
+        if( evm_version_ >= 3 ) {
+            assert(res.storage_gas_consumed == 0);
+            assert(res.storage_gas_refund == 0);
+            res.storage_gas_consumed = cost; // This is equivalent to state.apply_storage_gas_delta(cost)
+        }
+        if ((res.gas_left -= cost) < 0) {
+            res.status_code = EVMC_OUT_OF_GAS;
+            // If we run out of gas lets do everything here
+            if( evm_version_ >= 3 ) {
+                evmone::revert_speculative_gas(res);
+            } else {
+                res.gas_refund = 0;
+                res.gas_left = 0;
+            }
+            if (const auto tracer = my_vm->get_tracer())
+            {
+                // However, we still need to notify the tracer about the execution.
+                tracer->notify_execution_start(m_rev, msg, {});
+                tracer->notify_execution_end(res.raw());
+            }
+            return res;
+        }
+        msg.gas = res.gas_left;
+    }
+
     const auto code_acc = m_state.find(msg.code_address);
     if (code_acc == nullptr || code_acc->code_hash == Account::EMPTY_CODE_HASH)
     {
@@ -456,7 +518,7 @@ evmc::Result Host::execute_message(const evmc_message& msg) noexcept
     }
 
     auto opt_result = my_vm->execute_cached_code(*this, m_rev, msg, code_acc->code_hash,
-        [this](const address& addr) { return m_state.get_code(addr); });
+        [this](const address& addr) { return m_state.get_code(addr); }, evm_version_, gas_params_);
     if (opt_result.has_value())
         return std::move(*opt_result);
 
@@ -465,7 +527,7 @@ evmc::Result Host::execute_message(const evmc_message& msg) noexcept
     if (code.empty())
         return evmc::Result{EVMC_SUCCESS, msg.gas};  // Skip trivial execution.
 
-    return m_vm.execute(*this, m_rev, msg, code.data(), code.size());
+    return m_vm.execute(*this, m_rev, msg, code.data(), code.size(), evm_version_, gas_params_);
 }
 
 evmc::Result Host::call(const evmc_message& orig_msg) noexcept
@@ -476,8 +538,18 @@ evmc::Result Host::call(const evmc_message& orig_msg) noexcept
 
     const auto logs_checkpoint = m_logs.size();
     const auto state_checkpoint = m_state.checkpoint();
+    const auto filtered_messages_size = m_state.filtered_messages_.size();
 
     auto result = execute_message(*msg);
+
+    if(result.status_code == EVMC_SUCCESS && message_filter_ && (*message_filter_)(*msg)) {
+        m_state.add_filtered_message(evmone::eosevm::filtered_message{
+            .sender   = msg->sender,
+            .receiver = msg->recipient,
+            .value    = msg->value,
+            .data     = evmc::bytes{msg->input_data, msg->input_size}
+        });
+    }
 
     if (result.status_code != EVMC_SUCCESS)
     {
@@ -488,6 +560,7 @@ evmc::Result Host::call(const evmc_message& orig_msg) noexcept
         // Revert.
         m_state.rollback(state_checkpoint);
         m_logs.resize(logs_checkpoint);
+        m_state.filtered_messages_.resize(filtered_messages_size);
 
         // The 0x03 quirk: the touch on this address is never reverted.
         if (is_03_touched && m_rev >= EVMC_SPURIOUS_DRAGON)

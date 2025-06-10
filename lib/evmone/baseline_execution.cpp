@@ -347,7 +347,7 @@ evmc_result execute(VM& vm, const evmc_message& msg, ExecutionState& state, cons
 }
 
 evmc_result execute(evmc_vm* c_vm, const evmc_host_interface* host, evmc_host_context* ctx,
-    evmc_revision rev, const evmc_message* msg, const uint8_t* code, size_t code_size) noexcept
+    evmc_revision rev, const evmc_message* msg, const uint8_t* code, size_t code_size, uint64_t evm_version, const evmc_gas_parameters* gas_params) noexcept
 {
     auto vm = static_cast<VM*>(c_vm);
     const bytes_view container{code, code_size};
@@ -365,8 +365,8 @@ evmc_result execute(evmc_vm* c_vm, const evmc_host_interface* host, evmc_host_co
     }
 
     const auto code_analysis = analyze(container, eof_enabled);
-    auto state =
-        std::make_unique<ExecutionState>(*msg, rev, *host, ctx, bytes_view{code, code_size});
+    auto state = std::make_unique<evmone::ExecutionState>();
+    state->reset(*msg, rev, *host, ctx, bytes_view{code, code_size}, *static_cast<const gas_parameters*>(gas_params), evm_version);
     return execute(*vm, *msg, *state, code_analysis);
 }
 }  // namespace evmone::baseline

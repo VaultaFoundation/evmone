@@ -78,7 +78,7 @@ EVMC_EXPORT CodeAnalysis analyze(bytes_view code, bool eof_enabled);
 
 /// Executes in Baseline interpreter using EVMC-compatible parameters.
 evmc_result execute(evmc_vm* vm, const evmc_host_interface* host, evmc_host_context* ctx,
-    evmc_revision rev, const evmc_message* msg, const uint8_t* code, size_t code_size) noexcept;
+    evmc_revision rev, const evmc_message* msg, const uint8_t* code, size_t code_size, uint64_t evm_version, const evmc_gas_parameters* gas_params) noexcept;
 
 /// Executes in Baseline interpreter with the pre-processed code.
 EVMC_EXPORT evmc_result execute(VM&, const evmc_message& msg, ExecutionState& state, const CodeAnalysis& analysis) noexcept;

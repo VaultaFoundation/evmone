@@ -43,16 +43,23 @@ class Host : public evmc::Host
     const BlockHashes& m_block_hashes;
     const Transaction& m_tx;
     std::vector<Log> m_logs;
+    uint64_t evm_version_;
+    const evmone::gas_parameters& gas_params_;
+    std::optional<evmone::eosevm::filter_function> message_filter_;
 
 public:
     Host(evmc_revision rev, evmc::VM& vm, State& state, const BlockInfo& block,
-        const BlockHashes& block_hashes, const Transaction& tx) noexcept
-      : m_rev{rev}, m_vm{vm}, m_state{state}, m_block{block}, m_block_hashes{block_hashes}, m_tx{tx}
+        const BlockHashes& block_hashes, const Transaction& tx, uint64_t evm_version, const evmone::gas_parameters& scaled_gas_params) noexcept
+      : m_rev{rev}, m_vm{vm}, m_state{state}, m_block{block}, m_block_hashes{block_hashes}, m_tx{tx}, evm_version_{evm_version}, gas_params_{scaled_gas_params}
     {}
 
     [[nodiscard]] std::vector<Log>&& take_logs() noexcept { return std::move(m_logs); }
 
     evmc::Result call(const evmc_message& msg) noexcept override;
+
+    void set_message_filter(std::optional<evmone::eosevm::filter_function> message_filter) {
+      message_filter_ = message_filter;
+    }
 
 private:
     [[nodiscard]] bool account_exists(const address& addr) const noexcept override;

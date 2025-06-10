@@ -40,7 +40,7 @@ evmc_result execute(AdvancedExecutionState& state, const AdvancedCodeAnalysis& a
 }
 
 evmc_result execute(evmc_vm* /*unused*/, const evmc_host_interface* host, evmc_host_context* ctx,
-    evmc_revision rev, const evmc_message* msg, const uint8_t* code, size_t code_size) noexcept
+    evmc_revision rev, const evmc_message* msg, const uint8_t* code, size_t code_size, uint64_t evm_version, const evmc_gas_parameters* gas_params) noexcept
 {
     AdvancedCodeAnalysis analysis;
     const bytes_view container = {code, code_size};
@@ -58,7 +58,10 @@ evmc_result execute(evmc_vm* /*unused*/, const evmc_host_interface* host, evmc_h
     }
     else
         analysis = analyze(rev, container);
-    auto state = std::make_unique<AdvancedExecutionState>(*msg, rev, *host, ctx, container);
+
+    auto state = std::make_unique<AdvancedExecutionState>();
+    evmone::gas_parameters gas_params_ex{*gas_params};
+    state->reset(*msg, rev, *host, ctx, container, gas_params_ex, evm_version);
     return execute(*state, analysis);
 }
 }  // namespace evmone::advanced

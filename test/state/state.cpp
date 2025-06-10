@@ -320,6 +320,10 @@ void State::rollback(size_t checkpoint)
     }
 }
 
+void State::add_filtered_message(const evmone::eosevm::filtered_message& msg) noexcept {
+    filtered_messages_.push_back(msg);
+}
+
 /// Validates transaction and computes its execution gas limit (the amount of gas provided to EVM).
 /// @return  Execution gas limit or transaction validation error.
 std::variant<TransactionProperties, std::error_code> validate_transaction(
@@ -455,7 +459,7 @@ StateDiff finalize(const StateView& state_view, evmc_revision rev, const address
 TransactionReceipt transition(const StateView& state_view, const BlockInfo& block,
     const BlockHashes& block_hashes, const Transaction& tx, evmc_revision rev, evmc::VM& vm,
     const TransactionProperties& tx_props, uint64_t eos_evm_version,
-    const evmone::gas_parameters& scaled_gas_params, const evmone::eosevm::gas_prices& gas_prices, const bool is_trust)
+    const evmone::gas_parameters& scaled_gas_params, const evmone::eosevm::gas_prices& gas_prices, const bool is_trust, std::optional<evmone::eosevm::filter_function> message_filter)
 {
     State state{state_view};
 
@@ -486,7 +490,8 @@ TransactionReceipt transition(const StateView& state_view, const BlockInfo& bloc
         sender_acc.balance -= intx::uint256(blob_fee);
     }
 
-    Host host{rev, vm, state, block, block_hashes, tx};
+    Host host{rev, vm, state, block, block_hashes, tx, eos_evm_version, scaled_gas_params};
+    host.set_message_filter(message_filter);
 
     sender_acc.access_status = EVMC_ACCESS_WARM;  // Tx sender is always warm.
     if (tx.to.has_value())
@@ -505,7 +510,7 @@ TransactionReceipt transition(const StateView& state_view, const BlockInfo& bloc
 
     const auto result = host.call(build_message(tx, tx_props.execution_gas_limit, rev));
 
-    auto res = evmone::eosevm::refund(rev, eos_evm_version, result, tx.to.has_value(),
+    auto res = evmone::eosevm::refund(rev, eos_evm_version, result, !tx.to.has_value(),
         tx.gas_limit, scaled_gas_params, effective_gas_price, gas_prices, priority_gas_price);
 
     auto gas_used = std::visit([](const auto& v) { return static_cast<int64_t>(v.gas_used); }, res);
@@ -532,7 +537,7 @@ TransactionReceipt transition(const StateView& state_view, const BlockInfo& bloc
 
     // Cumulative gas used is unknown in this scope.
     return TransactionReceipt{
-        tx.type, result.status_code, gas_used, {}, host.take_logs(), {}, state.build_diff(rev), {}, exec_res
+        tx.type, result.status_code, gas_used, {}, host.take_logs(), {}, state.build_diff(rev), {}, exec_res, state.filtered_messages()
     };
 }
 }  // namespace evmone::state

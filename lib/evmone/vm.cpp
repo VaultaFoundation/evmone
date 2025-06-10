@@ -125,7 +125,8 @@ void CodeCache::put(const evmc::bytes32& code_hash, std::shared_ptr<baseline::Co
 
 std::optional<evmc::Result> VM::execute_cached_code(evmc::Host& host, evmc_revision rev,
     const evmc_message& msg, const evmc::bytes32& code_hash,
-    const std::function<evmc::bytes_view(evmc::address)>& get_code) noexcept
+    const std::function<evmc::bytes_view(evmc::address)>& get_code,
+    uint64_t evm_version, const evmone::gas_parameters& gas_params) noexcept
 {
     if (execute != static_cast<decltype(execute)>(baseline::execute))  // Only Baseline is supported
         return {};
@@ -143,10 +144,9 @@ std::optional<evmc::Result> VM::execute_cached_code(evmc::Host& host, evmc_revis
     }
 
     const auto& ca = *p;
-    auto state =
-        std::make_unique<ExecutionState>(msg, rev, evmc::Host::get_interface(), host.to_context(), ca.raw_code());
-    return evmc::Result{
-        baseline::execute(*this, msg, *state, ca)};
+    auto state = std::make_unique<ExecutionState>();
+    state->reset(msg, rev, evmc::Host::get_interface(), host.to_context(), ca.raw_code(), gas_params, evm_version);
+    return evmc::Result{baseline::execute(*this, msg, *state, ca)};
 }
 
 }  // namespace evmone

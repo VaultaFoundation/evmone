@@ -1,7 +1,6 @@
 // evmone: Fast Ethereum Virtual Machine implementation
 // Copyright 2022 The evmone Authors.
 // SPDX-License-Identifier: Apache-2.0
-
 #include "refund.hpp"
 
 namespace evmone { namespace eosevm {
@@ -50,11 +49,13 @@ refund_result refund(const evmc_revision rev, const uint64_t version,
             }
 
             //TODO: SILKWORM_ASSERT(gas_refund <= gas_used);
+            asert(gas_refund <= gas_used);
             res_v3.gas_refund = static_cast<uint64_t>(gas_refund);
             gas_left += res_v3.gas_refund;
             assert(gas_limit >= gas_left);
             gas_used = gas_limit - gas_left;
             //TODO: SILKWORM_ASSERT(gas_used >= total_storage_gas_consumed);
+            assert(gas_used >= total_storage_gas_consumed);
             final_fee = price * gas_used;
 
             assert(final_fee >= res_v3.storage_fee);
