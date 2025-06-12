@@ -362,13 +362,12 @@ evmc::Result Host::create(const evmc_message& msg) noexcept
         return res;
     };
 
-    auto result = m_vm.execute(*this, m_rev, create_msg, initcode.data(), initcode.size(), evm_version_, gas_params_);
+    auto result = m_vm.execute(*this, m_rev, create_msg, initcode.data(), initcode.size(), evm_version_, gas_params_.values_);
     if (result.status_code != EVMC_SUCCESS)
     {
         result.create_address = msg.recipient;
         return maybe_revert_gas(result);
     }
-
     assert(result.gas_left >= 0);
     const bytes_view code{result.output_data, result.output_size};
 
@@ -377,7 +376,7 @@ evmc::Result Host::create(const evmc_message& msg) noexcept
     assert(msg.kind != EVMC_EOFCREATE || result.status_code != EVMC_SUCCESS || !code.empty());
 
     // Code deployment cost.
-    auto code_deploy_gas = code.size() * (evm_version_ > 0 ? gas_params_.G_codedeposit : 200);
+    auto code_deploy_gas = code.size() * (evm_version_ > 0 ? gas_params_.values_.G_codedeposit : 200);
     if (m_rev >= EVMC_SPURIOUS_DRAGON && code.size() > MAX_CODE_SIZE) {
         result.status_code = EVMC_FAILURE;
     } else if (evm_version_ >= 3) {
@@ -477,7 +476,7 @@ evmc::Result Host::execute_message(const evmc_message& message) noexcept
 
     evmc::Result res(EVMC_SUCCESS, msg.gas, 0, 0);
     if(evm_version_ > 0 && msg.depth == 0 &&  !value_is_zero && !recipient_exists) {
-        int64_t cost = static_cast<int64_t>(gas_params_.G_txnewaccount);
+        int64_t cost = static_cast<int64_t>(gas_params_.values_.G_txnewaccount);
         if( evm_version_ >= 3 ) {
             assert(res.storage_gas_consumed == 0);
             assert(res.storage_gas_refund == 0);
@@ -527,7 +526,7 @@ evmc::Result Host::execute_message(const evmc_message& message) noexcept
     if (code.empty())
         return evmc::Result{EVMC_SUCCESS, msg.gas};  // Skip trivial execution.
 
-    return m_vm.execute(*this, m_rev, msg, code.data(), code.size(), evm_version_, gas_params_);
+    return m_vm.execute(*this, m_rev, msg, code.data(), code.size(), evm_version_, gas_params_.values_);
 }
 
 evmc::Result Host::call(const evmc_message& orig_msg) noexcept

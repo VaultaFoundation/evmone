@@ -140,8 +140,8 @@ TEST_P(evm, call_new_account_creation_cost_eos_evm)
     // Test account creation from inside a contract
     //----------------------------------------------
 
-    gas_params.G_newaccount = 25005;
-    gas_params.G_txnewaccount = 25006;
+    gas_params.values_.G_newaccount = 25005;
+    gas_params.values_.G_txnewaccount = 25006;
 
     host.accounts[msg.recipient].set_balance(1024);
     execute(code);
@@ -203,8 +203,8 @@ TEST_P(evm, call_reserved_address_cost_eos_evm)
 
         msg.recipient = msg_dst;
 
-        gas_params.G_newaccount = 25005;
-        gas_params.G_txnewaccount = 25006;
+        gas_params.values_.G_newaccount = 25005;
+        gas_params.values_.G_txnewaccount = 25006;
 
         host.accounts[msg.recipient].set_balance(1024);
         execute(code);
@@ -248,7 +248,7 @@ TEST_P(evm, selfdestruct_eos_evm)
     eos_evm_version = 1;
     rev = evm_version_to_revision[eos_evm_version];
 
-    gas_params.G_newaccount = 25005;
+    gas_params.values_.G_newaccount = 25005;
 
     msg.recipient = 0x01_address;
     host.accounts[msg.recipient].set_balance(1024);
@@ -292,7 +292,7 @@ TEST_P(evm, create_gas_cost_eos_evm)
     rev = evm_version_to_revision[eos_evm_version];
 
     // Set CREATE opcode static gas cost to 32005
-    gas_params.G_txcreate = 32005;
+    gas_params.values_.G_txcreate = 32005;
 
     // Bytecode created by `create()`
     //    inst     |  cost
@@ -344,7 +344,7 @@ TEST_P(evm, create2_gas_cost_eos_evm)
     rev = evm_version_to_revision[eos_evm_version];
 
     // Set CREATE2 opcode static gas cost to 32005
-    gas_params.G_txcreate = 32005;
+    gas_params.values_.G_txcreate = 32005;
     const auto code = static_cast<bytecode>(create2().salt(0x5a));
 
     // Bytecode created by `create2().salt(0x5a)`
@@ -513,8 +513,8 @@ TEST_P(evm, call_gas_state_integration_eos_evm)
 
     msg.recipient = msg_dst;
 
-    gas_params.G_newaccount = 25005;
-    gas_params.G_txnewaccount = 25006;
+    gas_params.values_.G_newaccount = 25005;
+    gas_params.values_.G_txnewaccount = 25006;
 
     host.accounts[msg.recipient].set_balance(1024);
 
@@ -567,7 +567,7 @@ TEST_P(evm, create_gas_state_propagation_eos_evm)
     rev = evm_version_to_revision[eos_evm_version];
 
     // Set CREATE opcode static gas cost to 32005
-    gas_params.G_txcreate = 32005;
+    gas_params.values_.G_txcreate = 32005;
 
     // 50000-(3+3+3+32005) = 17986
     // Gas for the message sent after CREATE = 17986 - int(17986/64) = 17705 (gas_in)
@@ -627,8 +627,8 @@ TEST_P(evm, call_gas_state_integration_out_of_gas_eos_evm)
 
     msg.recipient = msg_dst;
 
-    gas_params.G_newaccount = 25005;
-    gas_params.G_txnewaccount = 25006;
+    gas_params.values_.G_newaccount = 25005;
+    gas_params.values_.G_txnewaccount = 25006;
 
     host.accounts[msg.recipient].set_balance(1024);
 
@@ -687,8 +687,8 @@ TEST_P(evm, call_gas_state_integration_revert_eos_evm)
 
     msg.recipient = msg_dst;
 
-    gas_params.G_newaccount = 25005;
-    gas_params.G_txnewaccount = 25006;
+    gas_params.values_.G_newaccount = 25005;
+    gas_params.values_.G_txnewaccount = 25006;
 
     host.accounts[msg.recipient].set_balance(1024);
 
@@ -748,7 +748,7 @@ TEST_P(evm, eos_evm_test_apply_discount_factor)
     intx::uint256 factor_num{1};
     intx::uint256 factor_den{2};
 
-    auto scaled = gas_parameters::apply_discount_factor(factor_num, factor_den, non_scaled);
+    auto scaled = gas_parameters::apply_discount_factor(factor_num, factor_den, non_scaled).values_;
 
     EXPECT_EQ(scaled.G_txnewaccount,  500);
     EXPECT_EQ(scaled.G_newaccount  , 1000);

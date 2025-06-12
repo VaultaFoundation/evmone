@@ -112,10 +112,10 @@ Result call_impl(StackTop stack, int64_t gas_left, ExecutionState& state) noexce
 
         if ((has_value || state.rev < EVMC_SPURIOUS_DRAGON) && !state.host.account_exists(dst)) {
             if( state.eos_evm_version >= 3 ) {
-                auto storage_cost = state.gas_state.apply_storage_gas_delta(static_cast<int64_t>(state.gas_params.G_newaccount));
+                auto storage_cost = state.gas_state.apply_storage_gas_delta(static_cast<int64_t>(state.gas_params.values_.G_newaccount));
                 cost += storage_cost;
             } else if( state.eos_evm_version >= 1 ) {
-                cost += static_cast<int64_t>(state.gas_params.G_newaccount);
+                cost += static_cast<int64_t>(state.gas_params.values_.G_newaccount);
             } else {
                 cost += 25000;
             }
@@ -315,9 +315,9 @@ Result create_impl(StackTop stack, int64_t gas_left, ExecutionState& state) noex
     // OP_CREATE/OP_CREATE2 gas cost (32000) is constant among all evmc revisions up to Cancun
     int64_t gas_cost = 32000;
     if(state.eos_evm_version >= 3) {
-        gas_cost = state.gas_state.apply_storage_gas_delta(static_cast<int64_t>(state.gas_params.G_txcreate));
+        gas_cost = state.gas_state.apply_storage_gas_delta(static_cast<int64_t>(state.gas_params.values_.G_txcreate));
     } else if (state.eos_evm_version >= 1) {
-        gas_cost = static_cast<int64_t>(state.gas_params.G_txcreate);
+        gas_cost = static_cast<int64_t>(state.gas_params.values_.G_txcreate);
     }
 
     if (INTX_UNLIKELY((gas_left -= gas_cost) < 0))

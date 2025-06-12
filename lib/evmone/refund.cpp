@@ -16,9 +16,9 @@ refund_result refund(const evmc_revision rev, const uint64_t version,
         uint64_t storage_gas_consumed{static_cast<uint64_t>(vm_res.storage_gas_consumed)};
         if(is_contract_creation) {
             if( vm_res.status_code == EVMC_SUCCESS ) {
-                storage_gas_consumed += scaled_gas_params.G_txcreate; //correct storage gas consumed to account for initial G_txcreate storage gas
+                storage_gas_consumed += scaled_gas_params.values_.G_txcreate; //correct storage gas consumed to account for initial G_txcreate storage gas
             } else {
-                gas_left += scaled_gas_params.G_txcreate;
+                gas_left += scaled_gas_params.values_.G_txcreate;
             }
         }
 
@@ -49,7 +49,7 @@ refund_result refund(const evmc_revision rev, const uint64_t version,
             }
 
             //TODO: SILKWORM_ASSERT(gas_refund <= gas_used);
-            asert(gas_refund <= gas_used);
+            assert(gas_refund <= gas_used);
             res_v3.gas_refund = static_cast<uint64_t>(gas_refund);
             gas_left += res_v3.gas_refund;
             assert(gas_limit >= gas_left);

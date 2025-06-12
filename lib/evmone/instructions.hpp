@@ -1236,7 +1236,7 @@ inline TermResult selfdestruct(StackTop stack, int64_t gas_left, ExecutionState&
             // sending value to a non-existing account.
             if (!state.host.account_exists(beneficiary))
             {
-                int64_t storage_cost = state.eos_evm_version > 0 ? static_cast<int64_t>(state.gas_params.G_newaccount) : 25000;
+                int64_t storage_cost = state.eos_evm_version > 0 ? static_cast<int64_t>(state.gas_params.values_.G_newaccount) : 25000;
                 if( state.eos_evm_version > 2 ) {
                     storage_cost = state.gas_state.apply_storage_gas_delta(storage_cost);
                 }

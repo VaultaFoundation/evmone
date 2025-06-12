@@ -509,7 +509,6 @@ TransactionReceipt transition(const StateView& state_view, const BlockInfo& bloc
         host.access_account(block.coinbase);
 
     const auto result = host.call(build_message(tx, tx_props.execution_gas_limit, rev));
-
     auto res = evmone::eosevm::refund(rev, eos_evm_version, result, !tx.to.has_value(),
         tx.gas_limit, scaled_gas_params, effective_gas_price, gas_prices, priority_gas_price);
 

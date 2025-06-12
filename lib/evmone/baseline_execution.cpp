@@ -366,7 +366,8 @@ evmc_result execute(evmc_vm* c_vm, const evmc_host_interface* host, evmc_host_co
 
     const auto code_analysis = analyze(container, eof_enabled);
     auto state = std::make_unique<evmone::ExecutionState>();
-    state->reset(*msg, rev, *host, ctx, bytes_view{code, code_size}, *static_cast<const gas_parameters*>(gas_params), evm_version);
+    gas_parameters params{*gas_params};
+    state->reset(*msg, rev, *host, ctx, bytes_view{code, code_size}, params, evm_version);
     return execute(*vm, *msg, *state, code_analysis);
 }
 }  // namespace evmone::baseline
