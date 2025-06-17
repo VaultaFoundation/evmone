@@ -521,6 +521,7 @@ TransactionReceipt transition(const StateView& state_view, const BlockInfo& bloc
     sender_acc.balance += tx_max_cost - gas_used * effective_gas_price;
 
     evmone::eosevm::execution_result exec_res;
+    exec_res.data = evmc::bytes{result.output_data, result.output_size};
     if( eos_evm_version >= 3 ) {
         const auto& resv3 = std::get<evmone::eosevm::refund_result_v3>(res);
         exec_res.discounted_storage_gas_consumed = resv3.discounted_storage_gas_consumed;
