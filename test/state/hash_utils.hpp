@@ -29,6 +29,9 @@ static constexpr auto EmptyListHash =
 /// Computes Keccak hash out of input bytes (wrapper of ethash::keccak256).
 inline hash256 keccak256(bytes_view data) noexcept
 {
-    return std::bit_cast<hash256>(ethash::keccak256(data.data(), data.size()));
+    const auto eh = ethash::keccak256(data.data(), data.size());
+    hash256 h;
+    std::memcpy(h.bytes, eh.bytes, sizeof(h));  // TODO: Use std::bit_cast.
+    return h;
 }
 }  // namespace evmone

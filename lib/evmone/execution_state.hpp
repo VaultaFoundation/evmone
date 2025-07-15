@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 
+#include <cstdlib>
 #include <evmc/evmc.hpp>
 #include <intx/intx.hpp>
 #include <memory>
@@ -41,7 +42,12 @@ class StackSpace
         // MSVC doesn't support aligned_alloc() but _aligned_malloc() can be used instead.
         const auto p = _aligned_malloc(size, alignment);
 #else
-        const auto p = std::aligned_alloc(alignment, size);
+        #ifdef ANTELOPE
+        const auto p = malloc(size);
+        #else
+        const auto p = aligned_alloc(alignment, size);
+        #endif
+
 #endif
         return static_cast<uint256*>(p);
     }

@@ -9,6 +9,7 @@
 
 #include <list>
 #include <vector>
+#include <unordered_map>
 
 #if defined(_MSC_VER) && !defined(__clang__)
 #define EVMONE_CGOTO_SUPPORTED 0

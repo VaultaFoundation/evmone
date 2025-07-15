@@ -1,5 +1,4 @@
 #include "gas_parameters.hpp"
-#include <iostream>
 
 namespace evmone {
 

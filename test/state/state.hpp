@@ -15,6 +15,7 @@
 #include <evmone/execution_state.hpp>
 #include <evmone/gas_prices.hpp>
 #include <variant>
+#include <unordered_map>
 
 namespace evmone::state
 {

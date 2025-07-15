@@ -5,6 +5,7 @@
 #include "precompiles.hpp"
 #include "precompiles_internal.hpp"
 #include "precompiles_stubs.hpp"
+#ifndef ANTELOPE
 #include <evmone_precompiles/blake2b.hpp>
 #include <evmone_precompiles/bls.hpp>
 #include <evmone_precompiles/bn254.hpp>
@@ -12,6 +13,10 @@
 #include <evmone_precompiles/ripemd160.hpp>
 #include <evmone_precompiles/secp256k1.hpp>
 #include <evmone_precompiles/sha256.hpp>
+#else
+#include <ethash/hash_types.hpp>
+#include <ethash/keccak.hpp>
+#endif
 #include <intx/intx.hpp>
 #include <array>
 #include <bit>
@@ -19,7 +24,7 @@
 #include <limits>
 #include <span>
 
-//#include <silkworm/core/execution/precompile.hpp>
+#include <silkworm/core/execution/precompile.hpp>
 
 #ifdef EVMONE_PRECOMPILES_SILKPRE
 #include "precompiles_silkpre.hpp"
@@ -97,6 +102,11 @@ PrecompileAnalysis blake2bf_analyze(bytes_view input, evmc_revision) noexcept
     return {input.size() == 213 ? intx::be::unsafe::load<uint32_t>(input.data()) : GasCostMax, 64};
 }
 
+inline size_t bit_width(uint64_t x) {
+    if (x == 0) return 0;
+    return 64 - __builtin_clzll(x);
+}
+
 PrecompileAnalysis expmod_analyze(bytes_view input, evmc_revision rev) noexcept
 {
     using namespace intx;
@@ -127,7 +137,7 @@ PrecompileAnalysis expmod_analyze(bytes_view input, evmc_revision rev) noexcept
         const size_t exp_bit_width =
             (top_byte_index != bytes_view::npos) ?
                 (head_len - top_byte_index - 1) * 8 +
-                    static_cast<size_t>(std::bit_width(head_explicit_bytes[top_byte_index])) :
+                    static_cast<size_t>(bit_width(head_explicit_bytes[top_byte_index])) :
                 0;
 
         return std::max(
@@ -165,6 +175,7 @@ PrecompileAnalysis point_evaluation_analyze(bytes_view, evmc_revision) noexcept
     return {POINT_EVALUATION_PRECOMPILE_GAS, 64};
 }
 
+#ifndef ANTELOPE
 PrecompileAnalysis bls12_g1add_analyze(bytes_view, evmc_revision) noexcept
 {
     static constexpr auto BLS12_G1ADD_PRECOMPILE_GAS = 375;
@@ -248,7 +259,9 @@ PrecompileAnalysis bls12_map_fp2_to_g2_analyze(bytes_view, evmc_revision) noexce
     static constexpr auto BLS12_MAP_FP2_TO_G2_PRECOMPILE_GAS = 23800;
     return {BLS12_MAP_FP2_TO_G2_PRECOMPILE_GAS, BLS12_G2_POINT_SIZE};
 }
+#endif
 
+#ifndef ANTELOPE
 ExecutionResult ecrecover_execute(const uint8_t* input, size_t input_size, uint8_t* output,
     [[maybe_unused]] size_t output_size) noexcept
 {
@@ -508,38 +521,98 @@ ExecutionResult bls12_map_fp2_to_g2_execute(const uint8_t* input, size_t input_s
 
     return {EVMC_SUCCESS, BLS12_G2_POINT_SIZE};
 }
+#endif
 
 namespace {
 ExecutionResult silkworm_ecrecover_execute(const uint8_t* input, size_t input_size, uint8_t* output,
     [[maybe_unused]] size_t output_size) noexcept
 {
-    return {EVMC_FAILURE, 0};
-    //auto res = silkworm::precompile::ecrec_run({input, input_size});
-    //std::memcpy(output, res->data(), res->size());
-    //return {EVMC_SUCCESS, res->size()};
+    auto res = silkworm::precompile::ecrec_run({input, input_size});
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
 }
 
 ExecutionResult silkworm_expmod_execute(const uint8_t* input, size_t input_size, uint8_t* output,
     [[maybe_unused]] size_t output_size) noexcept
 {
-    return {EVMC_FAILURE, 0};
-    // auto res = silkworm::precompile::expmod_run({input, input_size});
-    // if (!res)
-    //     return {EVMC_PRECOMPILE_FAILURE, 0};
-    // std::memcpy(output, res->data(), res->size());
-    // return {EVMC_SUCCESS, res->size()};
+    auto res = silkworm::precompile::expmod_run({input, input_size});
+    if (!res)
+        return {EVMC_PRECOMPILE_FAILURE, 0};
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
 }
 
 ExecutionResult silkworm_ecpairing_execute(const uint8_t* input, size_t input_size, uint8_t* output,
     [[maybe_unused]] size_t output_size) noexcept
 {
-return {EVMC_FAILURE, 0};
-    // auto res = silkworm::precompile::snarkv_run({input, input_size});
-    // if (!res)
-    //     return {EVMC_PRECOMPILE_FAILURE, 0};
-    // std::memcpy(output, res->data(), res->size());
-    // return {EVMC_SUCCESS, res->size()};
+    auto res = silkworm::precompile::snarkv_run({input, input_size});
+    if (!res)
+        return {EVMC_PRECOMPILE_FAILURE, 0};
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
 }
+#ifdef ANTELOPE
+ExecutionResult silkworm_sha256_execute(const uint8_t* input, size_t input_size, uint8_t* output,
+    [[maybe_unused]] size_t output_size) noexcept
+{
+    auto res = silkworm::precompile::sha256_run({input, input_size});
+    if (!res)
+        return {EVMC_PRECOMPILE_FAILURE, 0};
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
+}
+
+ExecutionResult silkworm_ripemd160_execute(const uint8_t* input, size_t input_size, uint8_t* output,
+    [[maybe_unused]] size_t output_size) noexcept
+{
+    auto res = silkworm::precompile::rip160_run({input, input_size});
+    if (!res)
+        return {EVMC_PRECOMPILE_FAILURE, 0};
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
+}
+
+ExecutionResult silkworm_identity_execute(const uint8_t* input, size_t input_size, uint8_t* output,
+    [[maybe_unused]] size_t output_size) noexcept
+{
+    auto res = silkworm::precompile::id_run({input, input_size});
+    if (!res)
+        return {EVMC_PRECOMPILE_FAILURE, 0};
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
+}
+
+ExecutionResult silkworm_ecadd_execute(const uint8_t* input, size_t input_size, uint8_t* output,
+    [[maybe_unused]] size_t output_size) noexcept
+{
+    auto res = silkworm::precompile::bn_add_run({input, input_size});
+    if (!res)
+        return {EVMC_PRECOMPILE_FAILURE, 0};
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
+}
+
+ExecutionResult silkworm_ecmul_execute(const uint8_t* input, size_t input_size, uint8_t* output,
+    [[maybe_unused]] size_t output_size) noexcept
+{
+    auto res = silkworm::precompile::bn_mul_run({input, input_size});
+    if (!res)
+        return {EVMC_PRECOMPILE_FAILURE, 0};
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
+}
+
+ExecutionResult silkworm_blake2bf_execute(const uint8_t* input, size_t input_size, uint8_t* output,
+    [[maybe_unused]] size_t output_size) noexcept
+{
+    auto res = silkworm::precompile::blake2_f_run({input, input_size});
+    if (!res)
+        return {EVMC_PRECOMPILE_FAILURE, 0};
+    std::memcpy(output, res->data(), res->size());
+    return {EVMC_SUCCESS, res->size()};
+}
+
+#endif
 }
 
 namespace
@@ -550,6 +623,23 @@ struct PrecompileTraits
     decltype(identity_execute)* execute = nullptr;
 };
 
+#ifdef ANTELOPE
+inline constexpr auto traits = []() noexcept {
+    std::array<PrecompileTraits, NumPrecompiles> tbl{{
+        {},  // undefined for 0
+        {ecrecover_analyze, silkworm_ecrecover_execute},
+        {sha256_analyze, silkworm_sha256_execute},
+        {ripemd160_analyze, silkworm_ripemd160_execute},
+        {identity_analyze, silkworm_identity_execute},
+        {expmod_analyze, silkworm_expmod_execute},
+        {ecadd_analyze, silkworm_ecadd_execute},
+        {ecmul_analyze, silkworm_ecmul_execute},
+        {ecpairing_analyze, silkworm_ecpairing_execute},
+        {blake2bf_analyze, silkworm_blake2bf_execute},
+    }};
+    return tbl;
+}();
+#else
 inline constexpr auto traits = []() noexcept {
     std::array<PrecompileTraits, NumPrecompiles> tbl{{
         {},  // undefined for 0
@@ -583,6 +673,7 @@ inline constexpr auto traits = []() noexcept {
 #endif
     return tbl;
 }();
+#endif
 }  // namespace
 
 bool is_precompile(evmc_revision rev, const evmc::address& addr) noexcept

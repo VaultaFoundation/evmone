@@ -3,7 +3,6 @@
 #include <optional>
 #include <evmc/evmc.hpp>
 #include <intx/intx.hpp>
-#include <iostream>
 #include <evmone/instructions_traits.hpp>
 #include "storage_cost.hpp"
 

@@ -11,7 +11,6 @@
 #include <evmone/refund.hpp>
 #include <evmone/execution_result.hpp>
 #include <algorithm>
-
 namespace evmone::state
 {
 namespace
@@ -23,7 +22,7 @@ constexpr int64_t num_words(size_t size_in_bytes) noexcept
 
 size_t compute_tx_data_tokens(evmc_revision rev, bytes_view data) noexcept
 {
-    const auto num_zero_bytes = static_cast<size_t>(std::ranges::count(data, 0));
+    const auto num_zero_bytes = static_cast<size_t>(std::count(data.begin(), data.end(), 0));
     const auto num_nonzero_bytes = data.size() - num_zero_bytes;
 
     const size_t nonzero_byte_multiplier = rev >= EVMC_ISTANBUL ? 4 : 17;
@@ -344,9 +343,9 @@ std::variant<TransactionProperties, std::error_code> validate_transaction(
         if (tx.max_blob_gas_price < *block.blob_base_fee)
             return make_error_code(FEE_CAP_LESS_THEN_BLOCKS);
 
-        if (std::ranges::any_of(tx.blob_hashes, [](const auto& h) { return h.bytes[0] != 0x01; }))
+        if (std::any_of(tx.blob_hashes.begin(), tx.blob_hashes.end(), [](const auto& h) { return h.bytes[0] != 0x01; }))
             return make_error_code(INVALID_BLOB_HASH_VERSION);
-        if (std::cmp_greater(tx.blob_gas_used(), blob_gas_left))
+        if (tx.blob_gas_used() > blob_gas_left)
             return make_error_code(BLOB_GAS_LIMIT_EXCEEDED);
         break;
 
@@ -494,8 +493,9 @@ TransactionReceipt transition(const StateView& state_view, const BlockInfo& bloc
     host.set_message_filter(message_filter);
 
     sender_acc.access_status = EVMC_ACCESS_WARM;  // Tx sender is always warm.
-    if (tx.to.has_value())
+    if (tx.to.has_value()) {
         host.access_account(*tx.to);
+    }
     for (const auto& [a, storage_keys] : tx.access_list)
     {
         host.access_account(a);
@@ -522,6 +522,7 @@ TransactionReceipt transition(const StateView& state_view, const BlockInfo& bloc
 
     evmone::eosevm::execution_result exec_res;
     exec_res.data = evmc::bytes{result.output_data, result.output_size};
+    exec_res.status = result.status_code;
     if( eos_evm_version >= 3 ) {
         const auto& resv3 = std::get<evmone::eosevm::refund_result_v3>(res);
         exec_res.discounted_storage_gas_consumed = resv3.discounted_storage_gas_consumed;

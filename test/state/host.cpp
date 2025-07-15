@@ -7,7 +7,6 @@
 #include <evmone/constants.hpp>
 #include <evmone/eof.hpp>
 #include <evmone/vm.hpp>
-
 namespace evmone::state
 {
 bool Host::account_exists(const address& addr) const noexcept
@@ -177,6 +176,11 @@ bool Host::selfdestruct(const address& addr, const address& beneficiary) noexcep
     return false;
 }
 
+inline size_t bit_width(uint64_t x) {
+    if (x == 0) return 0;
+    return 64 - __builtin_clzll(x);
+}
+
 address compute_create_address(const address& sender, uint64_t sender_nonce) noexcept
 {
     static constexpr auto RLP_STR_BASE = 0x80;
@@ -195,11 +199,11 @@ address compute_create_address(const address& sender, uint64_t sender_nonce) noe
     }
     else  // Prefixed integer encoding.
     {
-        // TODO: bit_width returns int after [LWG 3656](https://cplusplus.github.io/LWG/issue3656).
-        const auto num_nonzero_bytes = static_cast<int>((std::bit_width(sender_nonce) + 7) / 8);
+        const auto num_nonzero_bytes = static_cast<int>((bit_width(sender_nonce) + 7) / 8);
         *p++ = static_cast<uint8_t>(RLP_STR_BASE + num_nonzero_bytes);
         intx::be::unsafe::store(p, sender_nonce);
-        p = std::shift_left(p, p + MAX_NONCE_SIZE, MAX_NONCE_SIZE - num_nonzero_bytes);
+        std::copy(p + (MAX_NONCE_SIZE - num_nonzero_bytes), p + MAX_NONCE_SIZE, p);
+        p = p + num_nonzero_bytes;
     }
 
     const auto total_size = static_cast<size_t>(p - buffer);
@@ -441,16 +445,18 @@ evmc::Result Host::execute_message(const evmc_message& message) noexcept
     bool recipient_exists{false};
     if (msg.kind == EVMC_CALL)
     {
-        recipient_exists = m_state.find(msg.recipient) != nullptr;
-        if (!recipient_exists)
+        const auto acc = m_state.find(msg.recipient);
+        recipient_exists = acc != nullptr && !acc->is_empty();
+        if (acc == nullptr)
             m_state.journal_create(msg.recipient, recipient_exists);
     }
 
     const bool value_is_zero = evmc::is_zero(msg.value);
     if (msg.kind == EVMC_CALL)
     {
-        if (value_is_zero)
+        if (value_is_zero) {
             m_state.touch(msg.recipient);
+        }
         else
         {
             // We skip touching if we send value, because account cannot end up empty.
@@ -506,14 +512,13 @@ evmc::Result Host::execute_message(const evmc_message& message) noexcept
     if (code_acc == nullptr || code_acc->code_hash == Account::EMPTY_CODE_HASH)
     {
         // If the account or the code is empty, we can skip invoking instruction execution.
-        evmc::Result result{EVMC_SUCCESS, msg.gas};
         if (const auto tracer = my_vm->get_tracer())
         {
             // However, we still need to notify the tracer about the execution.
             tracer->notify_execution_start(m_rev, msg, {});
-            tracer->notify_execution_end(result.raw());
+            tracer->notify_execution_end(res.raw());
         }
-        return result;
+        return res;
     }
 
     auto opt_result = my_vm->execute_cached_code(*this, m_rev, msg, code_acc->code_hash,

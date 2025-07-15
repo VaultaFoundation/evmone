@@ -34,7 +34,11 @@ enum class PrecompileId : uint8_t
     since_istanbul = blake2bf,        ///< The first precompile introduced in Istanbul.
     since_cancun = point_evaluation,  ///< The first precompile introduced in Cancun.
     since_prague = bls12_g1add,       ///< The first precompile introduced in Prague.
+    #ifdef ANTELOPE
+    latest = blake2bf
+    #else
     latest = bls12_map_fp2_to_g2      ///< The latest introduced precompile (highest address).
+    #endif
 };
 
 /// The total number of known precompiles ids, including 0.
